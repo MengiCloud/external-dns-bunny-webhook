@@ -1,0 +1,18 @@
+# Multi-arch image build for the Mengi fork.
+# Includes the merged-but-unreleased upstream fix "fix incorrect record updates"
+# (commit 9b4e905), which the released v0.3.1 lacks. Self-contained (compiles
+# the Go binary inside the build) so `docker buildx` can produce multi-arch
+# images; the upstream Dockerfile (which ADDs a pre-built binary) is left as-is.
+FROM --platform=$BUILDPLATFORM golang:1.23 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -ldflags="-s -w" -o /out/app ./cmd/webhook
+
+FROM gcr.io/distroless/static-debian12:nonroot
+USER 20000:20000
+COPY --chmod=555 --from=build /out/app /opt/external-dns-bunny-webhook/app
+ENTRYPOINT ["/opt/external-dns-bunny-webhook/app"]
