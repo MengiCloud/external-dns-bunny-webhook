@@ -321,6 +321,15 @@ func (p *Provider) AdjustEndpoints(incoming []*endpoint.Endpoint) ([]*endpoint.E
 			for key, value := range checked.Labels {
 				editing.Labels[key] = value
 			}
+
+			// Records() always stamps bunny-* provider-specific properties
+			// (monitor-type/weight/disabled) onto current records; the source
+			// endpoints don't carry them. Mirror them onto the desired
+			// endpoint so the plan doesn't see a spurious diff and re-update
+			// every record on every reconcile.
+			for _, ps := range checked.ProviderSpecific {
+				editing.SetProviderSpecificProperty(ps.Name, ps.Value)
+			}
 		}
 
 		adjusted = append(adjusted, editing)
