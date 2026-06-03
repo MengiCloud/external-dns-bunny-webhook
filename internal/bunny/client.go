@@ -109,6 +109,9 @@ type CreateRecordRequest struct {
 	Port        int         `json:"Port"`
 	Weight      int         `json:"Weight"`
 	Disabled    bool        `json:"Disabled"`
+	// Comment carries the external-dns SetIdentifier so multiple records can
+	// share a name+type (one per cluster) and each stays independently owned.
+	Comment string `json:"Comment"`
 }
 
 func (c *BunnyClient) CreateRecord(ctx context.Context, zoneID string, r CreateRecordRequest) (*Record, error) {
@@ -183,6 +186,9 @@ type UpdateRecordRequest struct {
 	Port        int         `json:"Port"`
 	Weight      int         `json:"Weight"`
 	Disabled    bool        `json:"Disabled"`
+	// Comment carries the external-dns SetIdentifier (the record's identity);
+	// preserved on update so the record stays matched to its owning cluster.
+	Comment string `json:"Comment"`
 }
 
 func (c *BunnyClient) UpdateRecord(ctx context.Context, zoneID int64, recordID int64, r UpdateRecordRequest) error {

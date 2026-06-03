@@ -102,6 +102,25 @@ The weight to use for the DNS record. Valid values are between 1 and 100. This a
 default to `100` if not provided. Any value outside of the valid range will be set to the nearest valid value,
 and any non-integer value will result in the default value being used.
 
+### Multiple records per hostname (`set-identifier`)
+
+Bunny has no native "set identifier", so this provider persists external-dns'
+`external-dns.alpha.kubernetes.io/set-identifier` value in the record's
+**Comment** field and surfaces it back as the endpoint `SetIdentifier`. This lets
+several records share the same name and type — each addressed and reconciled
+independently — instead of being merged into one record.
+
+The intended use is **decentralized health-monitored failover**: two (or more)
+independent external-dns instances — for example one per cluster — can each
+publish their own A record for the same hostname, each with its own
+`webhook-bunny-monitor-type`, without a central writer or DNSEndpoint
+coordinator. Give each instance a distinct `txt-owner-id` and stamp a unique
+`set-identifier` (e.g. the cluster ID) on the source. Bunny's monitor then keeps
+only the healthy targets in rotation.
+
+Records created without a `set-identifier` keep an empty identifier and behave
+exactly as before (single owner per name+type).
+
 ### Additional Annotations
 
 The following additional annotations are being considered for future releases:

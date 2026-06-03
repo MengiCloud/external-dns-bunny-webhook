@@ -218,7 +218,7 @@ func (p *Provider) applyChangesDryRun(ctx context.Context, changes *plan.Changes
 	}
 
 	for _, ep := range changes.Delete {
-		tuple, ok := tuples[identifierKey(ep.DNSName, ep.RecordType)]
+		tuple, ok := tuples[identifierKey(ep.DNSName, ep.RecordType, ep.SetIdentifier)]
 		if !ok {
 			slog.InfoContext(ctx, "DRY RUN: Delete record (would skip, not found in Bunny API)",
 				slog.Group("record",
@@ -243,7 +243,7 @@ func (p *Provider) applyChangesDryRun(ctx context.Context, changes *plan.Changes
 	}
 
 	for _, ep := range changes.UpdateOld {
-		tuple, ok := tuples[identifierKey(ep.DNSName, ep.RecordType)]
+		tuple, ok := tuples[identifierKey(ep.DNSName, ep.RecordType, ep.SetIdentifier)]
 		if !ok {
 			slog.InfoContext(ctx, "DRY RUN: Update record (would skip, not found in Bunny API)",
 				slog.Group("current",
@@ -258,7 +258,7 @@ func (p *Provider) applyChangesDryRun(ctx context.Context, changes *plan.Changes
 
 		var new *endpoint.Endpoint
 		for _, n := range changes.UpdateNew {
-			if n.DNSName == ep.DNSName && n.RecordType == ep.RecordType {
+			if n.DNSName == ep.DNSName && n.RecordType == ep.RecordType && n.SetIdentifier == ep.SetIdentifier {
 				new = n
 				break
 			}
@@ -448,6 +448,7 @@ func (p *Provider) createEndpoints(ctx context.Context, creates []*endpoint.Endp
 			Port:        opts.Port,
 			Weight:      opts.Weight,
 			Disabled:    opts.Disabled,
+			Comment:     create.SetIdentifier,
 		}
 
 		slog.Debug("Creating Record.",
@@ -502,7 +503,7 @@ func (p *Provider) createEndpoints(ctx context.Context, creates []*endpoint.Endp
 // updateEndpoints updates the given endpoints.
 func (p *Provider) updateEndpoints(ctx context.Context, identifiers map[string]identifierTuple, updates []*endpoint.Endpoint) error {
 	for _, update := range updates {
-		tuple, ok := identifiers[identifierKey(update.DNSName, update.RecordType)]
+		tuple, ok := identifiers[identifierKey(update.DNSName, update.RecordType, update.SetIdentifier)]
 		if !ok {
 			return fmt.Errorf("failed to get record identifiers for %q", update.DNSName)
 		}
@@ -519,6 +520,7 @@ func (p *Provider) updateEndpoints(ctx context.Context, identifiers map[string]i
 			Port:        opts.Port,
 			Weight:      opts.Weight,
 			Disabled:    opts.Disabled,
+			Comment:     update.SetIdentifier,
 		}
 
 		err = p.client.UpdateRecord(ctx, tuple.ZoneID, tuple.RecordID, record)
@@ -544,7 +546,7 @@ func (p *Provider) updateEndpoints(ctx context.Context, identifiers map[string]i
 
 func (p *Provider) deleteEndpoints(ctx context.Context, identifiers map[string]identifierTuple, deletions []*endpoint.Endpoint) error {
 	for _, deletion := range deletions {
-		tuple, ok := identifiers[identifierKey(deletion.DNSName, deletion.RecordType)]
+		tuple, ok := identifiers[identifierKey(deletion.DNSName, deletion.RecordType, deletion.SetIdentifier)]
 		if !ok {
 			return fmt.Errorf("failed to get record identifiers for %q", deletion.DNSName)
 		}
@@ -582,8 +584,12 @@ type identifierTuple struct {
 	RecordID int64
 }
 
-func identifierKey(dnsName string, recordType string) string {
-	return dnsName + "|" + recordType
+// identifierKey keys a record by name, type AND SetIdentifier. Including the
+// SetIdentifier is what allows multiple records to share a name+type (e.g. one
+// A record per cluster for a health-monitored failover hostname) while each is
+// addressed and reconciled independently.
+func identifierKey(dnsName string, recordType string, setIdentifier string) string {
+	return dnsName + "|" + recordType + "|" + setIdentifier
 }
 
 // fetchIdentifiers fetches the zone and record identifiers for the given endpoints by listing
@@ -591,8 +597,10 @@ func identifierKey(dnsName string, recordType string) string {
 // all the identifiers in a single call (or paginated calls) and then use them to update or delete
 // records.
 //
-// The function matches on both DNS name and record type to ensure we get the correct record
-// when multiple record types exist for the same name (e.g., both A and TXT records).
+// The function matches on DNS name, record type and SetIdentifier (persisted in
+// the Bunny record Comment) to ensure we get the correct record when multiple
+// records exist for the same name (e.g., both A and TXT records, or several
+// per-cluster A records for one health-monitored failover hostname).
 func (p *Provider) fetchIdentifiers(ctx context.Context, endpoints []*endpoint.Endpoint) (map[string]identifierTuple, error) {
 	identifiers := make(map[string]identifierTuple)
 
@@ -618,11 +626,14 @@ func (p *Provider) fetchIdentifiers(ctx context.Context, endpoints []*endpoint.E
 			}
 
 			for _, record := range zone.Records {
-				if record.Name != recordName || record.Type.String() != ep.RecordType {
+				// Match name, type AND SetIdentifier (stored in Comment) so we
+				// resolve the exact record when several share a name+type
+				// (e.g. per-cluster failover records for one hostname).
+				if record.Name != recordName || record.Type.String() != ep.RecordType || record.Comment != ep.SetIdentifier {
 					continue
 				}
 
-				identifiers[identifierKey(ep.DNSName, ep.RecordType)] = identifierTuple{
+				identifiers[identifierKey(ep.DNSName, ep.RecordType, ep.SetIdentifier)] = identifierTuple{
 					ZoneID:   zone.ID,
 					RecordID: record.ID,
 				}
