@@ -106,6 +106,7 @@ type CreateRecordRequest struct {
 	Value       string      `json:"Value"`
 	Name        string      `json:"Name"`
 	MonitorType MonitorType `json:"MonitorType"`
+	Port        int         `json:"Port"`
 	Weight      int         `json:"Weight"`
 	Disabled    bool        `json:"Disabled"`
 }
@@ -179,6 +180,7 @@ type UpdateRecordRequest struct {
 	TTLSeconds  int         `json:"Ttl"`
 	Value       string      `json:"Value"`
 	MonitorType MonitorType `json:"MonitorType"`
+	Port        int         `json:"Port"`
 	Weight      int         `json:"Weight"`
 	Disabled    bool        `json:"Disabled"`
 }

@@ -90,6 +90,12 @@ The monitor type to use for the DNS record. Valid values are `none` (default), `
 annotation is optional and will default to `none` if not provided, which will create a standard DNS record
 without any monitoring.
 
+### `external-dns.alpha.kubernetes.io/webhook-bunny-port`
+
+The TCP port the health monitor checks, used together with a `ping`/`http`
+`monitor-type`. This annotation is optional; `0` (default) lets Bunny use the
+protocol default. Values must be between 0 and 65535.
+
 ### `external-dns.alpha.kubernetes.io/webhook-bunny-weight`
 
 The weight to use for the DNS record. Valid values are between 1 and 100. This annotation is optional and will

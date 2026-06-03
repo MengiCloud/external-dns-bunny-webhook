@@ -323,12 +323,16 @@ func (p *Provider) AdjustEndpoints(incoming []*endpoint.Endpoint) ([]*endpoint.E
 			}
 
 			// Records() always stamps bunny-* provider-specific properties
-			// (monitor-type/weight/disabled) onto current records; the source
-			// endpoints don't carry them. Mirror them onto the desired
+			// (monitor-type/port/weight/disabled) onto current records; the
+			// source endpoints don't carry them. Fill them onto the desired
 			// endpoint so the plan doesn't see a spurious diff and re-update
-			// every record on every reconcile.
+			// every record on every reconcile. Only fill properties the
+			// desired endpoint hasn't already set, so a user-provided monitor
+			// annotation still takes effect (and is applied as a real change).
 			for _, ps := range checked.ProviderSpecific {
-				editing.SetProviderSpecificProperty(ps.Name, ps.Value)
+				if _, ok := editing.GetProviderSpecificProperty(ps.Name); !ok {
+					editing.SetProviderSpecificProperty(ps.Name, ps.Value)
+				}
 			}
 		}
 
@@ -441,6 +445,7 @@ func (p *Provider) createEndpoints(ctx context.Context, creates []*endpoint.Endp
 			Value:       create.Targets[0],
 			TTLSeconds:  int(create.RecordTTL),
 			MonitorType: opts.MonitorType,
+			Port:        opts.Port,
 			Weight:      opts.Weight,
 			Disabled:    opts.Disabled,
 		}
@@ -511,6 +516,7 @@ func (p *Provider) updateEndpoints(ctx context.Context, identifiers map[string]i
 			TTLSeconds:  int(update.RecordTTL),
 			Value:       update.Targets[0],
 			MonitorType: opts.MonitorType,
+			Port:        opts.Port,
 			Weight:      opts.Weight,
 			Disabled:    opts.Disabled,
 		}
