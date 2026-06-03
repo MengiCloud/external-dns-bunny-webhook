@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,21 +33,26 @@ type Options struct {
 	ExcludeDomainsRegexp string   `env:"EXCLUDE_DOMAINS_REGEXP"`
 	IncludeDomains       []string `env:"INCLUDE_DOMAINS"`
 	IncludeDomainsRegexp string   `env:"INCLUDE_DOMAINS_REGEXP"`
+	// CIDRs whose IPs must never be published (e.g. the internal LB address a
+	// Hetzner Ingress status advertises). Defaults to RFC1918 + link-local.
+	ExcludeTargetNets []string `env:"EXCLUDE_TARGET_NETS"`
 }
 
 type Provider struct {
-	Options Options
-	client  Client
-	filter  endpoint.DomainFilterInterface
-	zoneMap *xsync.MapOf[string, int64]
+	Options     Options
+	client      Client
+	filter      endpoint.DomainFilterInterface
+	zoneMap     *xsync.MapOf[string, int64]
+	excludeNets []*net.IPNet
 }
 
 func NewProvider(client Client, options Options) *Provider {
 	provider := &Provider{
-		Options: options,
-		client:  client,
-		filter:  getDomainFilter(options),
-		zoneMap: xsync.NewMapOf[string, int64](),
+		Options:     options,
+		client:      client,
+		filter:      getDomainFilter(options),
+		zoneMap:     xsync.NewMapOf[string, int64](),
+		excludeNets: parseExcludeNets(options.ExcludeTargetNets),
 	}
 
 	// On startup, fetch zones so that all available zones are cached. This
@@ -296,7 +302,17 @@ func (p *Provider) AdjustEndpoints(incoming []*endpoint.Endpoint) ([]*endpoint.E
 		return nil, errs.Wrapf(err, "failed to fetch records")
 	}
 
+	adjusted := make([]*endpoint.Endpoint, 0, len(incoming))
 	for _, editing := range incoming {
+		// Drop excluded-net targets here, before the plan is computed.
+		// external-dns' --exclude-target-net only filters at apply time, so
+		// the desired set keeps the excluded target and the plan never
+		// converges (perpetual no-op updates).
+		editing.Targets = p.filterExcludedTargets(editing.Targets)
+		if len(editing.Targets) == 0 {
+			continue
+		}
+
 		for _, checked := range fetched {
 			if editing.DNSName != checked.DNSName || editing.RecordType != checked.RecordType || editing.SetIdentifier != checked.SetIdentifier {
 				continue
@@ -306,9 +322,60 @@ func (p *Provider) AdjustEndpoints(incoming []*endpoint.Endpoint) ([]*endpoint.E
 				editing.Labels[key] = value
 			}
 		}
+
+		adjusted = append(adjusted, editing)
 	}
 
-	return incoming, nil
+	return adjusted, nil
+}
+
+// defaultExcludeNets are non-routable ranges that must never be published to
+// public DNS. Used when BUNNY_EXCLUDE_TARGET_NETS is unset.
+var defaultExcludeNets = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+	"169.254.0.0/16", "fc00::/7", "fe80::/10",
+}
+
+func parseExcludeNets(cidrs []string) []*net.IPNet {
+	if len(cidrs) == 0 {
+		cidrs = defaultExcludeNets
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(strings.TrimSpace(c))
+		if err != nil {
+			slog.Warn("Ignoring invalid EXCLUDE_TARGET_NETS CIDR",
+				slog.String("cidr", c), slog.Any("error", err))
+			continue
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}
+
+// filterExcludedTargets removes IP targets that fall within an excluded
+// network. Non-IP targets (e.g. TXT registry values) are left untouched.
+func (p *Provider) filterExcludedTargets(targets endpoint.Targets) endpoint.Targets {
+	if len(p.excludeNets) == 0 {
+		return targets
+	}
+	out := make(endpoint.Targets, 0, len(targets))
+	for _, t := range targets {
+		if ip := net.ParseIP(t); ip != nil {
+			excluded := false
+			for _, n := range p.excludeNets {
+				if n.Contains(ip) {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // GetDomainFilter returns the domain filter used by this provider.
