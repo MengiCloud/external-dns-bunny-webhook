@@ -86,13 +86,14 @@ but will still be managed by the provider and visible in the Bunny.net dashboard
 
 ### `external-dns.alpha.kubernetes.io/webhook-bunny-monitor-type`
 
-The monitor type to use for the DNS record. Valid values are `none` (default), `http`, and `ping`. This
+The monitor type to use for the DNS record. Valid values are `none` (default), `http`, `ping`, and `tcp`.
+Use `tcp` to health-check a port accepting connections on a non-HTTP service (e.g. a database). This
 annotation is optional and will default to `none` if not provided, which will create a standard DNS record
 without any monitoring.
 
 ### `external-dns.alpha.kubernetes.io/webhook-bunny-port`
 
-The TCP port the health monitor checks, used together with a `ping`/`http`
+The TCP port the health monitor checks, used together with a `ping`/`http`/`tcp`
 `monitor-type`. This annotation is optional; `0` (default) lets Bunny use the
 protocol default. Values must be between 0 and 65535.
 

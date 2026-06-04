@@ -68,10 +68,14 @@ const (
 	MonitorTypeNone MonitorType = iota
 	MonitorTypePing
 	MonitorTypeHTTP
+	// MonitorTypeTCP checks that a TCP port accepts connections — the right
+	// monitor for non-HTTP services (e.g. databases). Its integer value (3)
+	// matches Bunny's MonitorType code.
+	MonitorTypeTCP
 )
 
 func (m MonitorType) String() string {
-	return [...]string{"none", "ping", "http"}[m]
+	return [...]string{"none", "ping", "http", "tcp"}[m]
 }
 
 func MonitorTypeFromString(s string) MonitorType {
@@ -80,6 +84,8 @@ func MonitorTypeFromString(s string) MonitorType {
 		return MonitorTypePing
 	case "http":
 		return MonitorTypeHTTP
+	case "tcp":
+		return MonitorTypeTCP
 	default:
 		return MonitorTypeNone
 	}

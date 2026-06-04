@@ -57,3 +57,33 @@ func TestMonitoringDefaults(t *testing.T) {
 		t.Errorf("Weight = %d, want 100 (default)", opts.Weight)
 	}
 }
+
+// TCP monitoring (Bunny MonitorType 3) is the right monitor for non-HTTP
+// services like databases. It must parse from the annotation and survive the
+// round-trip with its port.
+func TestTCPMonitorRoundTrip(t *testing.T) {
+	if got := MonitorTypeFromString("tcp"); got != MonitorTypeTCP {
+		t.Fatalf("MonitorTypeFromString(tcp) = %v, want tcp", got)
+	}
+	if got := MonitorTypeTCP.String(); got != "tcp" {
+		t.Fatalf("MonitorTypeTCP.String() = %q, want tcp", got)
+	}
+	if int(MonitorTypeTCP) != 3 {
+		t.Fatalf("MonitorTypeTCP = %d, want 3 (Bunny code)", int(MonitorTypeTCP))
+	}
+
+	rec := &Record{MonitorType: MonitorTypeTCP, Port: 5432}
+	ep := endpoint.NewEndpoint("db.example.com", "A", "1.2.3.4")
+	providerSpecificOptionsFromRecord(rec).ApplyToEndpoint(ep)
+
+	opts, err := providerSpecificOptionsFromEndpoint(ep)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.MonitorType != MonitorTypeTCP {
+		t.Errorf("MonitorType = %v, want tcp", opts.MonitorType)
+	}
+	if opts.Port != 5432 {
+		t.Errorf("Port = %d, want 5432", opts.Port)
+	}
+}
