@@ -424,14 +424,20 @@ func (p *Provider) createEndpoints(ctx context.Context, creates []*endpoint.Endp
 		With("creates", len(creates))
 
 	for _, create := range creates {
+		// The cluster sources can carry hostnames outside every zone this
+		// credential owns (e.g. the platform's own ingress hosts). Those are
+		// not ours to manage — skip them instead of failing the whole batch,
+		// which would wedge external-dns in a crash loop.
+		recordName, domainName, ok := extractRecordComponents(p.allZones(), create.DNSName)
+		if !ok {
+			slog.Debug("Skipping record outside all owned zones.",
+				slog.String("dnsName", create.DNSName))
+			continue
+		}
+
 		bunnyZoneID, err := p.getZoneID(create.DNSName)
 		if err != nil {
 			return errs.Wrapf(err, "failed to create record %q", create.DNSName)
-		}
-
-		recordName, domainName, ok := extractRecordComponents(p.allZones(), create.DNSName)
-		if !ok {
-			return errs.Errorf("failed to extract components for %q", create.DNSName)
 		}
 
 		opts, err := providerSpecificOptionsFromEndpoint(create)
@@ -505,7 +511,13 @@ func (p *Provider) updateEndpoints(ctx context.Context, identifiers map[string]i
 	for _, update := range updates {
 		tuple, ok := identifiers[identifierKey(update.DNSName, update.RecordType, update.SetIdentifier)]
 		if !ok {
-			return fmt.Errorf("failed to get record identifiers for %q", update.DNSName)
+			// Unresolvable record (outside owned zones, or already gone).
+			// Skip it — external-dns reconciles again next interval; failing
+			// here would block the rest of the batch indefinitely.
+			slog.Warn("Skipping update for unresolvable record.",
+				slog.String("dnsName", update.DNSName),
+				slog.String("setIdentifier", update.SetIdentifier))
+			continue
 		}
 
 		opts, err := providerSpecificOptionsFromEndpoint(update)
@@ -548,7 +560,12 @@ func (p *Provider) deleteEndpoints(ctx context.Context, identifiers map[string]i
 	for _, deletion := range deletions {
 		tuple, ok := identifiers[identifierKey(deletion.DNSName, deletion.RecordType, deletion.SetIdentifier)]
 		if !ok {
-			return fmt.Errorf("failed to get record identifiers for %q", deletion.DNSName)
+			// Unresolvable record (outside owned zones, or already gone) —
+			// nothing to delete; skip instead of failing the batch.
+			slog.Warn("Skipping delete for unresolvable record.",
+				slog.String("dnsName", deletion.DNSName),
+				slog.String("setIdentifier", deletion.SetIdentifier))
+			continue
 		}
 
 		opts, err := providerSpecificOptionsFromEndpoint(deletion)
@@ -615,9 +632,13 @@ func (p *Provider) fetchIdentifiers(ctx context.Context, endpoints []*endpoint.E
 	}
 
 	for _, ep := range endpoints {
+		// Endpoints outside all owned zones are not ours to manage; leave
+		// them out of the map so delete/update skip them.
 		recordName, domainName, ok := extractRecordComponents(domainNames, ep.DNSName)
 		if !ok {
-			return nil, fmt.Errorf("record %q cannot be handled, no matching zone found", ep.DNSName)
+			slog.Debug("Skipping record outside all owned zones.",
+				slog.String("dnsName", ep.DNSName))
+			continue
 		}
 
 		for _, zone := range zones {
@@ -679,14 +700,30 @@ func (p *Provider) fetchZones(ctx context.Context) ([]*Zone, error) {
 // by matching the DNS name with the list of available zones. If a match cannot be
 // found, the function returns false as the third argument. When a match is found,
 // the function returns the record name, zone, and true as the third argument.
+//
+// Matching is on label boundaries (so "foo-example.com" does not match the zone
+// "example.com") and prefers the most specific zone when zones nest (a record in
+// "connect.example.com" resolves to that zone, not "example.com"). The zone apex
+// itself yields an empty record name, which is how Bunny represents apex records.
 func extractRecordComponents(zones []string, dnsName string) (string, string, bool) {
+	best := ""
 	for _, zone := range zones {
-		if strings.HasSuffix(dnsName, zone) {
-			return dnsName[:len(dnsName)-len(zone)-1], zone, true
+		if dnsName != zone && !strings.HasSuffix(dnsName, "."+zone) {
+			continue
+		}
+		if len(zone) > len(best) {
+			best = zone
 		}
 	}
 
-	return "", "", false
+	if best == "" {
+		return "", "", false
+	}
+	if dnsName == best {
+		return "", best, true
+	}
+
+	return dnsName[:len(dnsName)-len(best)-1], best, true
 }
 
 func getDomainFilter(options Options) endpoint.DomainFilterInterface {
