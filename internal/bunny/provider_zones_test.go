@@ -107,6 +107,16 @@ func TestCreateEndpointsApexRecord(t *testing.T) {
 	}
 }
 
+// An apex record (empty Bunny record name) must read back as the zone itself,
+// not ".zone" — otherwise external-dns never recognizes the record it created
+// and re-creates it on every reconcile loop, flooding the zone.
+func TestRecordToEndpointApexRoundTrip(t *testing.T) {
+	ep := recordToEndpoint("connect.example.com", &Record{Name: "", Type: RecordTypeA, Value: "1.1.1.1"})
+	if ep.DNSName != "connect.example.com" {
+		t.Errorf("DNSName = %q, want connect.example.com", ep.DNSName)
+	}
+}
+
 // fetchIdentifiers must leave out-of-zone endpoints out of the map (so
 // delete/update skip them) instead of erroring the whole lookup.
 func TestFetchIdentifiersSkipsRecordsOutsideOwnedZones(t *testing.T) {

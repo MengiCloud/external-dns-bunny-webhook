@@ -5,8 +5,17 @@ import (
 )
 
 func recordToEndpoint(domain string, record *Record) *endpoint.Endpoint {
+	// An empty record name is Bunny's representation of the zone apex; the
+	// endpoint DNS name is then the zone itself. Prefixing it with "." would
+	// produce a name external-dns never matches, making it re-create the
+	// apex record on every reconcile loop.
+	dnsName := domain
+	if record.Name != "" {
+		dnsName = record.Name + "." + domain
+	}
+
 	ep := endpoint.NewEndpointWithTTL(
-		record.Name+"."+domain,
+		dnsName,
 		record.Type.String(),
 		endpoint.TTL(record.TTLSeconds),
 		record.Value,
