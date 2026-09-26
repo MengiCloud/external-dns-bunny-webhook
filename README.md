@@ -65,6 +65,8 @@ The provider can be configured using the following environment variables:
 |----------------------|----------|-------------|---------|
 | `BUNNY_API_KEY` | Yes | The API key used to authenticate with the Bunny.net API. | |
 | `BUNNY_DRY_RUN` | No | If set to `true`, the provider will not make any changes to the DNS records. | `false` |
+| `BUNNY_ZONES_TIMEOUT` | No | Upper bound on listing zones when external-dns reads records. Keep it below external-dns's `--webhook-provider-read-timeout`. | `4s` |
+| `BUNNY_STALE_ZONES_MAX_AGE` | No | How long the last successful zone listing is served to external-dns while the Bunny.net API fails. `0` disables the fallback. | `1h` |
 | `WEBHOOK_HOST` | No | The host to use for the webhook endpoint. | `localhost` |
 | `WEBHOOK_PORT` | No | The port to use for the webhook endpoint. | `8888` |
 | `WEBHOOK_READ_TIMEOUT` | No | The read timeout for the webhook endpoint. | `60s` |

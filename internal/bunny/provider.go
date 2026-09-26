@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/puzpuzpuz/xsync/v3"
 	"github.com/samber/lo"
@@ -36,6 +38,13 @@ type Options struct {
 	// CIDRs whose IPs must never be published (e.g. the internal LB address a
 	// Hetzner Ingress status advertises). Defaults to RFC1918 + link-local.
 	ExcludeTargetNets []string `env:"EXCLUDE_TARGET_NETS"`
+	// Upper bound on listing zones for a Records call. Must stay below
+	// external-dns's --webhook-provider-read-timeout (default 5s), otherwise
+	// external-dns gives up first and exits before the stale fallback applies.
+	ZonesTimeout time.Duration `env:"ZONES_TIMEOUT, default=4s"`
+	// How long the last successful zone listing may be served to Records while
+	// the Bunny.net API is failing. Zero disables the fallback.
+	StaleZonesMaxAge time.Duration `env:"STALE_ZONES_MAX_AGE, default=1h"`
 }
 
 type Provider struct {
@@ -44,6 +53,11 @@ type Provider struct {
 	filter      endpoint.DomainFilterInterface
 	zoneMap     *xsync.MapOf[string, int64]
 	excludeNets []*net.IPNet
+
+	// Last successful zone listing, served by Records while the API is down.
+	lastZonesMu sync.Mutex
+	lastZones   []*Zone
+	lastZonesAt time.Time
 }
 
 func NewProvider(client Client, options Options) *Provider {
@@ -61,10 +75,12 @@ func NewProvider(client Client, options Options) *Provider {
 	// to accurately exctract recordName from the full dnsName. Without it,
 	// we could not accurately handle all the expected TLDs without maintaing
 	// an internal list.
-	_, err := provider.fetchZones(context.Background())
+	zones, err := provider.fetchZones(context.Background())
 	if err != nil {
 		slog.Error("Failed to fetch zones on startup.",
 			slog.Any("error", err))
+	} else {
+		provider.rememberZones(zones)
 	}
 
 	return provider
@@ -89,7 +105,7 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	errs := oops.In("Provider").
 		Span("Records")
 
-	zones, err := p.fetchZones(ctx)
+	zones, err := p.recordsZones(ctx)
 	if err != nil {
 		slog.Error("Failed to fetch zones",
 			slog.Any("error", err))
@@ -694,6 +710,48 @@ func (p *Provider) fetchZones(ctx context.Context) ([]*Zone, error) {
 	}
 
 	return zones, nil
+}
+
+// recordsZones lists zones for Records, bounded by ZonesTimeout. When the API
+// fails it falls back to the last successful listing (up to StaleZonesMaxAge
+// old): external-dns exits when Records errors on its first sync, so a Bunny.net
+// outage would otherwise crash-loop every external-dns using this webhook.
+// Writes and fetchIdentifiers always go to the API, so stale data can at worst
+// make external-dns plan a change that then fails to apply.
+func (p *Provider) recordsZones(ctx context.Context) ([]*Zone, error) {
+	if p.Options.ZonesTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.Options.ZonesTimeout)
+		defer cancel()
+	}
+
+	zones, err := p.fetchZones(ctx)
+	if err == nil {
+		p.rememberZones(zones)
+		return zones, nil
+	}
+
+	p.lastZonesMu.Lock()
+	defer p.lastZonesMu.Unlock()
+
+	age := time.Since(p.lastZonesAt)
+	if p.lastZones == nil || age > p.Options.StaleZonesMaxAge {
+		return nil, err
+	}
+
+	slog.Warn("Bunny.net API unavailable, serving cached zones",
+		slog.Duration("age", age.Round(time.Second)),
+		slog.Any("error", err))
+
+	return p.lastZones, nil
+}
+
+func (p *Provider) rememberZones(zones []*Zone) {
+	p.lastZonesMu.Lock()
+	defer p.lastZonesMu.Unlock()
+
+	p.lastZones = zones
+	p.lastZonesAt = time.Now()
 }
 
 // extractRecordComponents extracts the record name and zone from a given DNS name
